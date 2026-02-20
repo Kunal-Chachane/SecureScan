@@ -7,11 +7,20 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import dns from "dns";
 import https from "https";
+import admin from "firebase-admin";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const JWT_SECRET = process.env.JWT_SECRET || "securescan-secret-key-123";
+
+// Initialize Firebase Admin
+if (process.env.VITE_FIREBASE_PROJECT_ID) {
+  admin.initializeApp({
+    projectId: process.env.VITE_FIREBASE_PROJECT_ID,
+  });
+}
+
 const db = new Database("securescan.db");
 
 // Initialize Database
@@ -88,6 +97,30 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
+app.post("/api/auth/google", async (req, res) => {
+  const { idToken } = req.body;
+  try {
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    const email = decodedToken.email;
+    if (!email) throw new Error("No email in token");
+
+    // Check if user exists, otherwise create
+    let user = db.prepare("SELECT * FROM users WHERE email = ?").get(email) as any;
+    if (!user) {
+      const stmt = db.prepare("INSERT INTO users (email, password_hash) VALUES (?, ?)");
+      // For Google users, we set a dummy/random password hash since they use OAuth
+      const info = stmt.run(email, "OAUTH_USER_" + Math.random());
+      user = { id: info.lastInsertRowid, email, role: 'analyst' };
+    }
+
+    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET);
+    res.json({ token, user: { id: user.id, email: user.email, role: user.role } });
+  } catch (error) {
+    console.error("Google Auth Error:", error);
+    res.status(401).json({ error: "Invalid Google token" });
+  }
+});
+
 // Google Safe Browsing Check
 async function checkGoogleSafeBrowsing(url: string) {
   const apiKey = process.env.GOOGLE_SAFE_BROWSING_API_KEY;
@@ -127,7 +160,7 @@ async function performTechnicalScan(urlStr: string) {
   if (!/^https?:\/\//i.test(normalizedUrl)) {
     normalizedUrl = "https://" + normalizedUrl;
   }
-  
+
   try {
     const parsedUrl = new URL(normalizedUrl);
     domain = parsedUrl.hostname;
@@ -259,11 +292,69 @@ app.get("/api/dashboard-stats", authenticateToken, (req: any, res) => {
       ORDER BY scan_date ASC
     `).all(req.user.id);
 
+    // New aggregations for graphs
+    const threatCategoriesRaw = db.prepare(`
+      SELECT scan_result_json FROM scans WHERE user_id = ?
+    `).all(req.user.id);
+
+    const categories = {
+      Malware: 0,
+      Phishing: 0,
+      "Suspicious Scripts": 0,
+      Blacklisted: 0
+    };
+
+    threatCategoriesRaw.forEach((s: any) => {
+      if (s.scan_result_json) {
+        try {
+          const details = JSON.parse(s.scan_result_json);
+          if (details.technical_details) {
+            if (details.technical_details.malware) categories.Malware++;
+            if (details.technical_details.phishing) categories.Phishing++;
+            if (details.technical_details.suspicious_scripts) categories["Suspicious Scripts"]++;
+            if (details.technical_details.blacklisted) categories.Blacklisted++;
+          }
+        } catch (e) { }
+      }
+    });
+
+    const threatCategories = Object.entries(categories).map(([name, count]) => ({ name, count }));
+
+    const riskTrends = db.prepare(`
+      SELECT date(created_at) as date, AVG(risk_score) as avgRisk
+      FROM scans 
+      WHERE user_id = ? AND created_at > date('now', '-30 days')
+      GROUP BY date
+      ORDER BY date ASC
+    `).all(req.user.id);
+
+    // Extract domain from URL for top domains
+    const topDomainsRaw = db.prepare(`
+      SELECT url, COUNT(*) as count
+      FROM scans 
+      WHERE user_id = ?
+      GROUP BY url
+      ORDER BY count DESC
+      LIMIT 5
+    `).all(req.user.id);
+
+    const topDomains = topDomainsRaw.map((d: any) => {
+      try {
+        const domain = new URL(d.url.startsWith('http') ? d.url : 'http://' + d.url).hostname;
+        return { domain, count: d.count };
+      } catch (e) {
+        return { domain: d.url, count: d.count };
+      }
+    });
+
     res.json({
       total_scans: stats.total_scans || 0,
       malicious_count: stats.malicious_count || 0,
       suspicious_count: stats.suspicious_count || 0,
-      recentScans: recentScans || []
+      recentScans: recentScans || [],
+      threatCategories,
+      riskTrends,
+      topDomains
     });
   } catch (error) {
     console.error("Dashboard stats error:", error);
@@ -295,7 +386,7 @@ async function startServer() {
     });
   }
 
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3001;
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });

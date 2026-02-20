@@ -47,4 +47,16 @@ export interface DashboardStats {
     count: number;
     scan_date: string;
   }>;
+  threatCategories: Array<{
+    name: string;
+    count: number;
+  }>;
+  riskTrends: Array<{
+    date: string;
+    avgRisk: number;
+  }>;
+  topDomains: Array<{
+    domain: string;
+    count: number;
+  }>;
 }

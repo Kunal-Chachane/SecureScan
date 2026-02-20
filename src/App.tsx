@@ -4,16 +4,16 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { 
-  Shield, 
-  Search, 
-  History, 
-  LayoutDashboard, 
-  AlertTriangle, 
-  CheckCircle, 
-  XCircle, 
-  ExternalLink, 
-  Menu, 
+import {
+  Shield,
+  Search,
+  History,
+  LayoutDashboard,
+  AlertTriangle,
+  CheckCircle,
+  XCircle,
+  ExternalLink,
+  Menu,
   X,
   LogOut,
   User as UserIcon,
@@ -26,22 +26,33 @@ import {
   Download,
   Plus
 } from 'lucide-react';
-import { 
-  LineChart, 
-  Line, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
   ResponsiveContainer,
   PieChart,
   Pie,
-  Cell
+  Cell,
+  BarChart,
+  Bar,
+  AreaChart,
+  Area,
+  Legend
 } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from "@google/genai";
 import { cn, formatRiskColor, formatRiskBg } from './lib/utils';
 import { User, ScanResult, DashboardStats } from './types';
+
+// --- Theme & Firebase ---
+import { ThemeProvider } from "./components/theme-provider";
+import { ThemeToggle } from "./components/theme-toggle";
+import { auth, googleProvider } from "./lib/firebase";
+import { signInWithPopup, onAuthStateChanged, signOut } from "firebase/auth";
 
 // --- Components ---
 
@@ -50,8 +61,8 @@ const SidebarItem = ({ icon: Icon, label, active, onClick }: any) => (
     onClick={onClick}
     className={cn(
       "flex items-center w-full gap-3 px-4 py-3 rounded-lg transition-all duration-200",
-      active 
-        ? "bg-blue-600 text-white shadow-lg shadow-blue-600/20" 
+      active
+        ? "bg-blue-600 text-white shadow-lg shadow-blue-600/20"
         : "text-slate-400 hover:bg-slate-800 hover:text-white"
     )}
   >
@@ -105,23 +116,23 @@ const Dashboard = ({ stats }: { stats: DashboardStats | null }) => {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <StatCard 
-          label="Total Scans" 
-          value={stats.total_scans} 
-          icon={Activity} 
-          colorClass="bg-blue-500/10 text-blue-500" 
+        <StatCard
+          label="Total Scans"
+          value={stats.total_scans}
+          icon={Activity}
+          colorClass="bg-blue-500/10 text-blue-500"
         />
-        <StatCard 
-          label="Malicious Detected" 
-          value={stats.malicious_count} 
-          icon={AlertTriangle} 
-          colorClass="bg-rose-500/10 text-rose-500" 
+        <StatCard
+          label="Malicious Detected"
+          value={stats.malicious_count}
+          icon={AlertTriangle}
+          colorClass="bg-rose-500/10 text-rose-500"
         />
-        <StatCard 
-          label="Suspicious URLs" 
-          value={stats.suspicious_count} 
-          icon={Shield} 
-          colorClass="bg-amber-500/10 text-amber-500" 
+        <StatCard
+          label="Suspicious URLs"
+          value={stats.suspicious_count}
+          icon={Shield}
+          colorClass="bg-amber-500/10 text-amber-500"
         />
       </div>
 
@@ -141,7 +152,7 @@ const Dashboard = ({ stats }: { stats: DashboardStats | null }) => {
                     <Cell key={`cell-${index}`} fill={entry.color} />
                   ))}
                 </Pie>
-                <Tooltip 
+                <Tooltip
                   contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px' }}
                   itemStyle={{ color: '#f8fafc' }}
                 />
@@ -163,19 +174,89 @@ const Dashboard = ({ stats }: { stats: DashboardStats | null }) => {
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={stats.recentScans}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                <XAxis 
-                  dataKey="scan_date" 
-                  stroke="#64748b" 
-                  fontSize={12} 
+                <XAxis
+                  dataKey="scan_date"
+                  stroke="#64748b"
+                  fontSize={12}
                   tickFormatter={(val) => new Date(val).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
                 />
                 <YAxis stroke="#64748b" fontSize={12} />
-                <Tooltip 
+                <Tooltip
                   contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px' }}
+                  itemStyle={{ color: '#f8fafc' }}
                 />
                 <Line type="monotone" dataKey="count" stroke="#3b82f6" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
+          </div>
+        </Card>
+
+        <Card title="Threat Categories Distribution">
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={stats.threatCategories} layout="vertical" margin={{ left: 40, right: 20 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" horizontal={true} vertical={false} />
+                <XAxis type="number" stroke="#64748b" fontSize={12} hide />
+                <YAxis type="category" dataKey="name" stroke="#64748b" fontSize={12} width={100} />
+                <Tooltip
+                  cursor={{ fill: 'rgba(59, 130, 246, 0.1)' }}
+                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px' }}
+                />
+                <Bar dataKey="count" fill="#3b82f6" radius={[0, 4, 4, 0]} barSize={20} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+
+        <Card title="Risk Score Evolution">
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={stats.riskTrends}>
+                <defs>
+                  <linearGradient id="colorRisk" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#f43f5e" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                <XAxis
+                  dataKey="date"
+                  stroke="#64748b"
+                  fontSize={12}
+                  tickFormatter={(val) => new Date(val).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                />
+                <YAxis stroke="#64748b" fontSize={12} domain={[0, 100]} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px' }}
+                />
+                <Area type="monotone" dataKey="avgRisk" stroke="#f43f5e" fillOpacity={1} fill="url(#colorRisk)" strokeWidth={2} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+
+        <Card title="Top Targeted Domains">
+          <div className="space-y-4">
+            {stats.topDomains.map((domain, i) => (
+              <div key={i} className="flex items-center justify-between group">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center text-slate-400 group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                    <Globe size={16} />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-white group-hover:text-blue-400 transition-colors uppercase tracking-tight">{domain.domain}</p>
+                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Infected Assets Identified</p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm font-black text-rose-500">{domain.count}</p>
+                  <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Scans</p>
+                </div>
+              </div>
+            ))}
+            {stats.topDomains.length === 0 && (
+              <p className="text-center text-slate-500 text-sm py-8">No domain data available yet.</p>
+            )}
           </div>
         </Card>
       </div>
@@ -239,7 +320,7 @@ const ScanPage = ({ onScanComplete, lastScan }: { onScanComplete: (res: ScanResu
   const handleScan = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmedUrl = url.trim();
-    
+
     if (!trimmedUrl) {
       setError('Please enter a URL to scan.');
       return;
@@ -249,27 +330,27 @@ const ScanPage = ({ onScanComplete, lastScan }: { onScanComplete: (res: ScanResu
       setError('Please enter a valid URL format (e.g., example.com or https://example.com).');
       return;
     }
-    
+
     setLoading(true);
     setError('');
-    
+
     try {
       // 1. Technical Scan
       setStatusMsg('Running technical diagnostics...');
       const techRes = await fetch('/api/scan/technical', {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
         body: JSON.stringify({ url: trimmedUrl })
       });
-      
+
       if (!techRes.ok) {
         const errData = await techRes.json();
         throw new Error(errData.error || 'Technical scan failed');
       }
-      
+
       const techData = await techRes.json();
       setProgress(40);
 
@@ -319,7 +400,7 @@ const ScanPage = ({ onScanComplete, lastScan }: { onScanComplete: (res: ScanResu
         contents: prompt,
         config: { responseMimeType: "application/json" }
       });
-      
+
       let aiData: any;
       if (aiAnalysis.text) {
         aiData = JSON.parse(aiAnalysis.text);
@@ -353,13 +434,13 @@ const ScanPage = ({ onScanComplete, lastScan }: { onScanComplete: (res: ScanResu
 
       const saveRes = await fetch('/api/scan/save', {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
-        body: JSON.stringify({ 
-          url: techData.url, 
-          risk_score: finalScore, 
+        body: JSON.stringify({
+          url: techData.url,
+          risk_score: finalScore,
           threat_level: threatLevel,
           details: finalDetails
         })
@@ -404,8 +485,8 @@ const ScanPage = ({ onScanComplete, lastScan }: { onScanComplete: (res: ScanResu
         <form onSubmit={handleScan} className="flex flex-col md:flex-row gap-2">
           <div className={cn(
             "flex-1 flex items-center gap-3 bg-slate-950 border rounded-xl px-4 transition-all",
-            error 
-              ? "border-rose-500/50 ring-1 ring-rose-500/20" 
+            error
+              ? "border-rose-500/50 ring-1 ring-rose-500/20"
               : "border-slate-800 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20"
           )}>
             <Globe className="text-slate-500 shrink-0" size={20} />
@@ -452,7 +533,7 @@ const ScanPage = ({ onScanComplete, lastScan }: { onScanComplete: (res: ScanResu
                 <span className="text-slate-500">{Math.round(progress)}%</span>
               </div>
               <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
-                <motion.div 
+                <motion.div
                   className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]"
                   initial={{ width: 0 }}
                   animate={{ width: `${progress}%` }}
@@ -463,7 +544,7 @@ const ScanPage = ({ onScanComplete, lastScan }: { onScanComplete: (res: ScanResu
           )}
 
           {error && (
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
               exit={{ opacity: 0, height: 0 }}
@@ -506,7 +587,7 @@ const ScanPage = ({ onScanComplete, lastScan }: { onScanComplete: (res: ScanResu
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-bold text-white">Most Recent Analysis</h3>
             <div className="flex gap-4">
-              <button 
+              <button
                 onClick={() => {
                   onScanComplete(lastScan);
                   setTimeout(() => window.print(), 500);
@@ -515,7 +596,7 @@ const ScanPage = ({ onScanComplete, lastScan }: { onScanComplete: (res: ScanResu
               >
                 <Download size={16} /> Download PDF
               </button>
-              <button 
+              <button
                 onClick={() => onScanComplete(lastScan)}
                 className="text-blue-500 hover:text-blue-400 text-sm font-bold flex items-center gap-1 transition-colors"
               >
@@ -523,7 +604,7 @@ const ScanPage = ({ onScanComplete, lastScan }: { onScanComplete: (res: ScanResu
               </button>
             </div>
           </div>
-          
+
           <Card className="bg-gradient-to-br from-slate-900 to-slate-950 border-blue-500/10">
             <div className="flex flex-col md:flex-row items-center gap-8">
               <div className="shrink-0">
@@ -537,9 +618,9 @@ const ScanPage = ({ onScanComplete, lastScan }: { onScanComplete: (res: ScanResu
                 <div className="flex flex-wrap justify-center md:justify-start gap-4">
                   <div className="px-3 py-1 rounded-lg bg-slate-800 border border-slate-700">
                     <p className="text-[10px] font-bold text-slate-500 uppercase mb-0.5">Verdict</p>
-                    <p className={cn("text-sm font-black", 
-                      lastScan.threat_level === 'Safe' ? "text-emerald-500" : 
-                      lastScan.threat_level === 'Suspicious' ? "text-amber-500" : "text-rose-500"
+                    <p className={cn("text-sm font-black",
+                      lastScan.threat_level === 'Safe' ? "text-emerald-500" :
+                        lastScan.threat_level === 'Suspicious' ? "text-amber-500" : "text-rose-500"
                     )}>
                       {lastScan.threat_level}
                     </p>
@@ -561,25 +642,25 @@ const ScanPage = ({ onScanComplete, lastScan }: { onScanComplete: (res: ScanResu
 const RiskMeter = ({ score }: { score: number }) => {
   const rotation = (score / 100) * 180 - 90;
   const color = score > 70 ? '#f43f5e' : score > 30 ? '#f59e0b' : '#10b981';
-  
+
   return (
     <div className="relative w-48 h-24 mx-auto overflow-hidden">
       <div className="absolute top-0 left-0 w-48 h-48 border-[12px] border-slate-800 rounded-full" />
-      <motion.div 
+      <motion.div
         className="absolute top-0 left-0 w-48 h-48 border-[12px] rounded-full"
         initial={{ rotate: -90, borderColor: '#10b981' }}
-        animate={{ 
+        animate={{
           rotate: rotation,
           borderColor: color
         }}
         transition={{ type: 'spring', damping: 20, stiffness: 100 }}
-        style={{ 
+        style={{
           clipPath: 'polygon(0 0, 100% 0, 100% 50%, 0 50%)',
           opacity: 0.8
         }}
       />
       <div className="absolute bottom-0 left-1/2 -translate-x-1/2 text-center">
-        <motion.div 
+        <motion.div
           initial={{ scale: 0.5, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           className="text-4xl font-black text-white"
@@ -609,7 +690,7 @@ const IndicatorItem = ({ label, status, icon: Icon }: any) => (
 
 const ReportPage = ({ scan, onBack }: { scan: ScanResult; onBack: () => void }) => {
   const details = scan.details;
-  
+
   const handlePrint = () => {
     window.print();
   };
@@ -625,7 +706,7 @@ const ReportPage = ({ scan, onBack }: { scan: ScanResult; onBack: () => void }) 
   };
 
   return (
-    <motion.div 
+    <motion.div
       key="report"
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
@@ -650,17 +731,17 @@ const ReportPage = ({ scan, onBack }: { scan: ScanResult; onBack: () => void }) 
         {/* Main Analysis Column */}
         <div className="lg:col-span-2 space-y-6">
           {/* Header Card */}
-          <Card className={cn("border-l-4 overflow-visible", 
-            scan.threat_level === 'Safe' ? "border-l-emerald-500" : 
-            scan.threat_level === 'Suspicious' ? "border-l-amber-500" : "border-l-rose-500"
+          <Card className={cn("border-l-4 overflow-visible",
+            scan.threat_level === 'Safe' ? "border-l-emerald-500" :
+              scan.threat_level === 'Suspicious' ? "border-l-amber-500" : "border-l-rose-500"
           )}>
             <div className="flex flex-col md:flex-row justify-between items-center gap-8">
               <div className="flex-1 space-y-4 text-center md:text-left">
                 <div>
                   <div className="flex items-center justify-center md:justify-start gap-3 mb-2">
-                    <span className={cn("px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest", 
-                      scan.threat_level === 'Safe' ? "bg-emerald-500/10 text-emerald-500" : 
-                      scan.threat_level === 'Suspicious' ? "bg-amber-500/10 text-amber-500" : "bg-rose-500/10 text-rose-500"
+                    <span className={cn("px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest",
+                      scan.threat_level === 'Safe' ? "bg-emerald-500/10 text-emerald-500" :
+                        scan.threat_level === 'Suspicious' ? "bg-amber-500/10 text-amber-500" : "bg-rose-500/10 text-rose-500"
                     )}>
                       {scan.threat_level} Verdict
                     </span>
@@ -673,10 +754,10 @@ const ReportPage = ({ scan, onBack }: { scan: ScanResult; onBack: () => void }) 
                   </div>
                   <h2 className="text-2xl font-bold text-white break-all leading-tight">{scan.url}</h2>
                 </div>
-                
-                <div className={cn("p-4 rounded-xl border flex items-start gap-3 text-left", 
-                  scan.threat_level === 'Safe' ? "bg-emerald-500/5 border-emerald-500/20" : 
-                  scan.threat_level === 'Suspicious' ? "bg-amber-500/5 border-amber-500/20" : "bg-rose-500/5 border-rose-500/20"
+
+                <div className={cn("p-4 rounded-xl border flex items-start gap-3 text-left",
+                  scan.threat_level === 'Safe' ? "bg-emerald-500/5 border-emerald-500/20" :
+                    scan.threat_level === 'Suspicious' ? "bg-amber-500/5 border-amber-500/20" : "bg-rose-500/5 border-rose-500/20"
                 )}>
                   {scan.threat_level === 'Safe' ? <CheckCircle className="text-emerald-500 shrink-0" size={20} /> : <AlertTriangle className="text-rose-500 shrink-0" size={20} />}
                   <div>
@@ -685,7 +766,7 @@ const ReportPage = ({ scan, onBack }: { scan: ScanResult; onBack: () => void }) 
                   </div>
                 </div>
               </div>
-              
+
               <div className="shrink-0">
                 <RiskMeter score={scan.risk_score} />
               </div>
@@ -800,8 +881,8 @@ const ReportPage = ({ scan, onBack }: { scan: ScanResult; onBack: () => void }) 
               Our neural network predicts a <span className="text-white font-bold">{(100 - scan.risk_score).toFixed(1)}% confidence</span> that this URL is {scan.threat_level.toLowerCase()} based on current heuristics.
             </p>
             <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-blue-500" 
+              <div
+                className="h-full bg-blue-500"
                 style={{ width: `${100 - scan.risk_score}%` }}
               />
             </div>
@@ -866,9 +947,9 @@ const HistoryPage = ({ onSelectScan }: { onSelectScan: (scan: ScanResult) => voi
                       <span className={cn("font-bold", formatRiskColor(scan.risk_score))}>{scan.risk_score}</span>
                     </td>
                     <td className="px-6 py-4">
-                      <span className={cn("px-2 py-1 rounded text-[10px] font-black uppercase", 
-                        scan.threat_level === 'Safe' ? "bg-emerald-500/10 text-emerald-500" : 
-                        scan.threat_level === 'Suspicious' ? "bg-amber-500/10 text-amber-500" : "bg-rose-500/10 text-rose-500"
+                      <span className={cn("px-2 py-1 rounded text-[10px] font-black uppercase",
+                        scan.threat_level === 'Safe' ? "bg-emerald-500/10 text-emerald-500" :
+                          scan.threat_level === 'Suspicious' ? "bg-amber-500/10 text-amber-500" : "bg-rose-500/10 text-rose-500"
                       )}>
                         {scan.threat_level}
                       </span>
@@ -877,7 +958,7 @@ const HistoryPage = ({ onSelectScan }: { onSelectScan: (scan: ScanResult) => voi
                       {new Date(scan.created_at).toLocaleDateString()}
                     </td>
                     <td className="px-6 py-4 text-right">
-                      <button 
+                      <button
                         onClick={() => onSelectScan(scan)}
                         className="p-2 text-slate-500 hover:text-white transition-colors"
                       >
@@ -931,6 +1012,34 @@ const AuthPage = ({ onAuth }: { onAuth: (user: User, token: string) => void }) =
     }
   };
 
+  const handleGoogleLogin = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      const user = result.user;
+      const idToken = await user.getIdToken();
+
+      // Verify with backend
+      const res = await fetch('/api/auth/google', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken })
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        onAuth(data.user, data.token);
+      } else {
+        setError(data.error || 'Google login failed on server');
+      }
+    } catch (err: any) {
+      setError(err.message || 'Google Login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-950 p-6">
       <div className="w-full max-w-md space-y-8">
@@ -975,8 +1084,43 @@ const AuthPage = ({ onAuth }: { onAuth: (user: User, token: string) => void }) =
             </button>
           </form>
 
+          <div className="relative my-6">
+            <div className="absolute inset-0 flex items-center">
+              <span className="w-full border-t border-slate-800"></span>
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-slate-900 px-2 text-slate-500">Or continue with</span>
+            </div>
+          </div>
+
+          <button
+            onClick={handleGoogleLogin}
+            disabled={loading}
+            className="w-full flex items-center justify-center gap-3 bg-slate-950 border border-slate-800 hover:bg-slate-900 text-white font-semibold py-3 rounded-xl transition-all"
+          >
+            <svg className="w-5 h-5" viewBox="0 0 24 24">
+              <path
+                fill="currentColor"
+                d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+              />
+              <path
+                fill="currentColor"
+                d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+              />
+              <path
+                fill="currentColor"
+                d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"
+              />
+              <path
+                fill="currentColor"
+                d="M12 5.38c1.62 0 3.06.56 4.21 1.66l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+              />
+            </svg>
+            Google
+          </button>
+
           <div className="mt-6 text-center">
-            <button 
+            <button
               onClick={() => setIsLogin(!isLogin)}
               className="text-sm text-slate-400 hover:text-white transition-colors"
             >
@@ -1018,7 +1162,7 @@ export default function App() {
         const data = await res.json();
         setStats(data);
       }
-    } catch (err) {}
+    } catch (err) { }
   };
 
   const handleAuth = (u: User, t: string) => {
@@ -1044,120 +1188,123 @@ export default function App() {
   if (!token) return <AuthPage onAuth={handleAuth} />;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-200 flex overflow-x-hidden">
-      {/* Sidebar Backdrop for Mobile */}
-      <AnimatePresence>
-        {isSidebarOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={() => setIsSidebarOpen(false)}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 lg:hidden"
-          />
-        )}
-      </AnimatePresence>
-
-      {/* Sidebar */}
-      <aside className={cn(
-        "fixed inset-y-0 left-0 z-50 w-64 bg-slate-950 border-r border-slate-800 transition-transform duration-300 lg:relative lg:translate-x-0",
-        !isSidebarOpen && "-translate-x-full"
-      )}>
-        <div className="flex flex-col h-full p-6">
-          <div className="flex items-center gap-3 mb-10 px-2">
-            <div className="p-2 bg-blue-600 rounded-lg text-white">
-              <Shield size={24} />
-            </div>
-            <h1 className="text-xl font-bold text-white tracking-tight">SecureScan</h1>
-          </div>
-
-          <nav className="flex-1 space-y-2">
-            <SidebarItem 
-              icon={LayoutDashboard} 
-              label="Dashboard" 
-              active={activeTab === 'dashboard' && !selectedScan} 
-              onClick={() => { setActiveTab('dashboard'); setSelectedScan(null); }} 
+    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
+      <div className="min-h-screen bg-slate-950 dark:bg-slate-950 text-slate-200 dark:text-slate-200 flex overflow-x-hidden">
+        {/* Sidebar Backdrop for Mobile */}
+        <AnimatePresence>
+          {isSidebarOpen && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsSidebarOpen(false)}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 lg:hidden"
             />
-            <SidebarItem 
-              icon={Search} 
-              label="URL Scanner" 
-              active={activeTab === 'scan' && !selectedScan} 
-              onClick={() => { setActiveTab('scan'); setSelectedScan(null); }} 
-            />
-            <SidebarItem 
-              icon={History} 
-              label="Scan History" 
-              active={activeTab === 'history' && !selectedScan} 
-              onClick={() => { setActiveTab('history'); setSelectedScan(null); }} 
-            />
-          </nav>
+          )}
+        </AnimatePresence>
 
-          <div className="mt-auto pt-6 border-t border-slate-800 space-y-4">
-            <div className="flex items-center gap-3 px-2">
-              <div className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center text-blue-500">
-                <UserIcon size={20} />
+        {/* Sidebar */}
+        <aside className={cn(
+          "fixed inset-y-0 left-0 z-50 w-64 bg-slate-950 dark:bg-slate-900 border-r border-slate-800 transition-transform duration-300 lg:relative lg:translate-x-0",
+          !isSidebarOpen && "-translate-x-full"
+        )}>
+          <div className="flex flex-col h-full p-6">
+            <div className="flex items-center gap-3 mb-10 px-2">
+              <div className="p-2 bg-blue-600 rounded-lg text-white">
+                <Shield size={24} />
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-bold text-white truncate">{user?.email}</p>
-                <p className="text-xs text-slate-500 uppercase tracking-wider">{user?.role}</p>
+              <h1 className="text-xl font-bold text-white tracking-tight">SecureScan</h1>
+            </div>
+
+            <nav className="flex-1 space-y-2">
+              <SidebarItem
+                icon={LayoutDashboard}
+                label="Dashboard"
+                active={activeTab === 'dashboard' && !selectedScan}
+                onClick={() => { setActiveTab('dashboard'); setSelectedScan(null); }}
+              />
+              <SidebarItem
+                icon={Search}
+                label="URL Scanner"
+                active={activeTab === 'scan' && !selectedScan}
+                onClick={() => { setActiveTab('scan'); setSelectedScan(null); }}
+              />
+              <SidebarItem
+                icon={History}
+                label="Scan History"
+                active={activeTab === 'history' && !selectedScan}
+                onClick={() => { setActiveTab('history'); setSelectedScan(null); }}
+              />
+            </nav>
+
+            <div className="mt-auto pt-6 border-t border-slate-800 dark:border-slate-800 space-y-4">
+              <div className="flex items-center gap-3 px-2">
+                <div className="w-10 h-10 rounded-full bg-slate-800 dark:bg-slate-800 flex items-center justify-center text-blue-500">
+                  <UserIcon size={20} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold text-white truncate">{user?.email}</p>
+                  <p className="text-xs text-slate-500 uppercase tracking-wider">{user?.role}</p>
+                </div>
               </div>
-            </div>
-            <button 
-              onClick={handleLogout}
-              className="flex items-center w-full gap-3 px-4 py-3 text-slate-400 hover:text-rose-500 transition-colors"
-            >
-              <LogOut size={20} />
-              <span className="font-medium">Sign Out</span>
-            </button>
-          </div>
-        </div>
-      </aside>
-
-      {/* Main Content */}
-      <main className="flex-1 flex flex-col min-w-0">
-        <header className="h-16 border-b border-slate-800 flex items-center justify-between px-6 bg-slate-950/50 backdrop-blur-md sticky top-0 z-40">
-          <button 
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            className="lg:hidden p-2 text-slate-400 hover:text-white"
-          >
-            {isSidebarOpen ? <X size={24} /> : <Menu size={24} />}
-          </button>
-          
-          <div className="flex items-center gap-4">
-            <div className="hidden md:flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-500 text-[10px] font-bold uppercase tracking-wider">
-              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              System Online
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button className="p-2 text-slate-400 hover:text-white transition-colors">
-              <Plus size={20} />
-            </button>
-          </div>
-        </header>
-
-        <div className="flex-1 overflow-y-auto p-6 lg:p-10">
-          <AnimatePresence mode="wait">
-            {selectedScan ? (
-              <ReportPage scan={selectedScan} onBack={() => setSelectedScan(null)} />
-            ) : (
-              <motion.div
-                key={activeTab}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.2 }}
+              <button
+                onClick={handleLogout}
+                className="flex items-center w-full gap-3 px-4 py-3 text-slate-400 hover:text-rose-500 transition-colors"
               >
-                {activeTab === 'dashboard' && <Dashboard stats={stats} />}
-                {activeTab === 'scan' && <ScanPage onScanComplete={handleScanComplete} lastScan={lastScan} />}
-                {activeTab === 'history' && <HistoryPage onSelectScan={setSelectedScan} />}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      </main>
-    </div>
+                <LogOut size={20} />
+                <span className="font-medium">Sign Out</span>
+              </button>
+            </div>
+          </div>
+        </aside>
+
+        {/* Main Content */}
+        <main className="flex-1 flex flex-col min-w-0">
+          <header className="h-16 border-b border-slate-800 dark:border-slate-800 flex items-center justify-between px-6 bg-slate-950/50 dark:bg-slate-950/50 backdrop-blur-md sticky top-0 z-40">
+            <button
+              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+              className="lg:hidden p-2 text-slate-400 hover:text-white"
+            >
+              {isSidebarOpen ? <X size={24} /> : <Menu size={24} />}
+            </button>
+
+            <div className="flex items-center gap-4">
+              <div className="hidden md:flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-500 dark:bg-emerald-500/20 dark:text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                System Online
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <ThemeToggle />
+              <button className="p-2 text-slate-400 hover:text-white transition-colors">
+                <Plus size={20} />
+              </button>
+            </div>
+          </header>
+
+          <div className="flex-1 overflow-y-auto p-6 lg:p-10 dark:bg-slate-950/20">
+            <AnimatePresence mode="wait">
+              {selectedScan ? (
+                <ReportPage scan={selectedScan} onBack={() => setSelectedScan(null)} />
+              ) : (
+                <motion.div
+                  key={activeTab}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  {activeTab === 'dashboard' && <Dashboard stats={stats} />}
+                  {activeTab === 'scan' && <ScanPage onScanComplete={handleScanComplete} lastScan={lastScan} />}
+                  {activeTab === 'history' && <HistoryPage onSelectScan={setSelectedScan} />}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </main>
+      </div>
+    </ThemeProvider>
   );
 }
 
