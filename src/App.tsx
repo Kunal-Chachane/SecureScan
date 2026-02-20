@@ -24,7 +24,13 @@ import {
   Activity,
   FileText,
   Download,
-  Plus
+  Plus,
+  Star,
+  Settings,
+  HelpCircle,
+  Info,
+  CreditCard,
+  LineChart as LineChartIcon
 } from 'lucide-react';
 import {
   LineChart,
@@ -44,15 +50,24 @@ import {
   Legend
 } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
-import { GoogleGenAI } from "@google/genai";
+// Google AI logic moved to backend
 import { cn, formatRiskColor, formatRiskBg } from './lib/utils';
+import { GoogleOAuthProvider } from '@react-oauth/google';
 import { User, ScanResult, DashboardStats } from './types';
 
 // --- Theme & Firebase ---
 import { ThemeProvider } from "./components/theme-provider";
 import { ThemeToggle } from "./components/theme-toggle";
+
+// --- Utilities ---
+const validateUrlSyntax = (url: string) => {
+  // Lenient regex allowing localhost, ports, and common URL structures
+  const pattern = /^(https?:\/\/)?([\w.-]+|\d{1,3}(\.\d{1,3}){3})(:\d+)?(\/.*)?$/;
+  return pattern.test(url);
+};
 import { auth, googleProvider } from "./lib/firebase";
 import { signInWithPopup, onAuthStateChanged, signOut } from "firebase/auth";
+import { GoogleLogin } from '@react-oauth/google';
 
 // --- Components ---
 
@@ -326,18 +341,18 @@ const ScanPage = ({ onScanComplete, lastScan }: { onScanComplete: (res: ScanResu
       return;
     }
 
-    if (!validateUrl(trimmedUrl)) {
-      setError('Please enter a valid URL format (e.g., example.com or https://example.com).');
+    if (!validateUrlSyntax(trimmedUrl)) {
+      setError('Please enter a valid URL (e.g., http://localhost:3000)');
       return;
     }
 
     setLoading(true);
+    setProgress(10);
     setError('');
+    setStatusMsg('Initializing Deep Security Scan...');
 
     try {
-      // 1. Technical Scan
-      setStatusMsg('Running technical diagnostics...');
-      const techRes = await fetch('/api/scan/technical', {
+      const res = await fetch('/api/scan/full', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -346,126 +361,27 @@ const ScanPage = ({ onScanComplete, lastScan }: { onScanComplete: (res: ScanResu
         body: JSON.stringify({ url: trimmedUrl })
       });
 
-      if (!techRes.ok) {
-        const errData = await techRes.json();
-        throw new Error(errData.error || 'Technical scan failed');
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error || 'Security scan failed');
       }
 
-      const techData = await techRes.json();
-      setProgress(40);
+      const scanResult = await res.json();
 
-      // 2. AI Analysis
-      setStatusMsg('AI Threat Assessment...');
-      const apiKey = (process.env as any).GEMINI_API_KEY;
-      if (!apiKey) {
-        throw new Error("Gemini API Key is not configured. Please add it to the Secrets panel.");
-      }
+      // Accelerated progress for UX
+      setProgress(70);
+      setStatusMsg('Finalizing Intelligence Report...');
 
-      const ai = new GoogleGenAI({ apiKey });
-      const prompt = `Analyze this URL for security threats: ${techData.url}. 
-      Technical Context:
-      - Domain: ${techData.domain}
-      - IP: ${techData.dns.address}
-      - SSL: ${techData.ssl.valid ? 'Valid' : 'Invalid/Missing'}
-      - GSB Blacklisted: ${techData.gsb.blacklisted ? 'Yes' : 'No'}
-      - Indicators: ${techData.indicators.join(', ')}
-
-      Provide a comprehensive security report. 
-      Return as JSON with this exact structure: 
-      { 
-        "score": number (0-100), 
-        "summary": string, 
-        "threats": string[], 
-        "verdict": string (one sentence),
-        "technical_details": {
-          "malware": boolean,
-          "phishing": boolean,
-          "suspicious_scripts": boolean,
-          "blacklisted": boolean,
-          "domain_age": string,
-          "brand_similarity": string,
-          "redirects": boolean,
-          "shortener_used": boolean,
-          "ip_as_domain": boolean,
-          "obfuscation": boolean
-        },
-        "hosting": {
-          "provider": string,
-          "country": string
-        }
-      }`;
-
-      const aiAnalysis = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
-        config: { responseMimeType: "application/json" }
-      });
-
-      let aiData: any;
-      if (aiAnalysis.text) {
-        aiData = JSON.parse(aiAnalysis.text);
-      } else {
-        throw new Error("AI analysis returned no content");
-      }
-      setProgress(80);
-
-      // 3. Finalize and Save
-      setStatusMsg('Finalizing report...');
-      const finalScore = Math.min(100, Math.max(techData.technical_risk_score, aiData.score || 0));
-      let threatLevel = "Safe";
-      if (finalScore > 70) threatLevel = "Malicious";
-      else if (finalScore > 30) threatLevel = "Suspicious";
-
-      const finalDetails = {
-        domain: techData.domain,
-        ip_address: techData.dns.address || "Unknown",
-        protocol: techData.url.startsWith("https") ? "HTTPS" : "HTTP",
-        ssl_status: techData.ssl.valid ? "Valid" : "Invalid/Missing",
-        indicators: [...techData.indicators, ...(aiData.threats || [])],
-        summary: aiData.summary,
-        verdict: aiData.verdict,
-        technical_details: {
-          ...aiData.technical_details,
-          blacklisted: aiData.technical_details.blacklisted || techData.gsb.blacklisted
-        },
-        hosting: aiData.hosting,
-        timestamp: new Date().toISOString()
-      };
-
-      const saveRes = await fetch('/api/scan/save', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        },
-        body: JSON.stringify({
-          url: techData.url,
-          risk_score: finalScore,
-          threat_level: threatLevel,
-          details: finalDetails
-        })
-      });
-
-      if (!saveRes.ok) throw new Error('Failed to save scan results');
-      const saveData = await saveRes.json();
-
-      const finalResult = {
-        id: saveData.id,
-        url: techData.url,
-        risk_score: finalScore,
-        threat_level: threatLevel as any,
-        created_at: new Date().toISOString(),
-        details: finalDetails
-      };
-
-      setProgress(100);
       setTimeout(() => {
-        onScanComplete(finalResult);
-        setUrl('');
-      }, 500);
+        setProgress(100);
+        setTimeout(() => {
+          onScanComplete(scanResult);
+          setUrl('');
+        }, 400);
+      }, 400);
 
     } catch (err: any) {
-      setError(err.message || 'Scan failed. Please check the URL and try again.');
+      setError(err.message || 'Scan failed. Please check your connection and try again.');
     } finally {
       setLoading(false);
     }
@@ -483,28 +399,59 @@ const ScanPage = ({ onScanComplete, lastScan }: { onScanComplete: (res: ScanResu
 
       <Card className="p-2 relative">
         <form onSubmit={handleScan} className="flex flex-col md:flex-row gap-2">
-          <div className={cn(
-            "flex-1 flex items-center gap-3 bg-slate-950 border rounded-xl px-4 transition-all",
-            error
-              ? "border-rose-500/50 ring-1 ring-rose-500/20"
-              : "border-slate-800 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20"
-          )}>
-            <Globe className="text-slate-500 shrink-0" size={20} />
-            <input
-              type="text"
-              disabled={loading}
-              value={url}
-              onChange={(e) => {
-                setUrl(e.target.value);
-                if (error) setError('');
-              }}
-              placeholder="https://example.com/suspicious-link"
-              className="w-full bg-transparent py-4 text-white focus:outline-none disabled:opacity-50 placeholder:text-slate-600"
-            />
+          <div className="flex-1 relative">
+            <div className={cn(
+              "flex items-center gap-3 bg-slate-950 border rounded-xl px-4 transition-all",
+              error
+                ? "border-rose-500/50 ring-1 ring-rose-500/20"
+                : url && !validateUrlSyntax(url)
+                  ? "border-amber-500/50 ring-1 ring-amber-500/20"
+                  : url && validateUrlSyntax(url)
+                    ? "border-emerald-500/50 ring-1 ring-emerald-500/20"
+                    : "border-slate-800 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20"
+            )}>
+              <Globe className={cn(
+                "transition-colors",
+                url && validateUrlSyntax(url) ? "text-emerald-500" : url && !validateUrlSyntax(url) ? "text-amber-500" : "text-slate-500"
+              )} size={20} />
+              <input
+                type="text"
+                disabled={loading}
+                value={url}
+                onChange={(e) => {
+                  setUrl(e.target.value);
+                  if (error) setError('');
+                }}
+                placeholder="https://example.com/suspicious-link"
+                className="w-full bg-transparent py-4 text-white focus:outline-none disabled:opacity-50 placeholder:text-slate-600"
+              />
+            </div>
+            <AnimatePresence>
+              {url && (
+                <motion.div
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -10 }}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2"
+                >
+                  {validateUrlSyntax(url) ? (
+                    <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 text-[10px] font-black uppercase tracking-widest border border-emerald-500/20 backdrop-blur-md">
+                      <CheckCircle size={10} />
+                      Valid Syntax
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 text-[10px] font-black uppercase tracking-widest border border-amber-500/20 backdrop-blur-md">
+                      <XCircle size={10} />
+                      Invalid Syntax
+                    </div>
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
           <button
-            disabled={loading}
-            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-4 px-8 rounded-xl transition-all flex items-center justify-center gap-3 min-w-[180px] relative overflow-hidden"
+            disabled={loading || !validateUrlSyntax(url)}
+            className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-white font-bold py-4 px-8 rounded-xl transition-all flex items-center justify-center gap-3 min-w-[180px] relative overflow-hidden"
           >
             {loading ? (
               <>
@@ -519,6 +466,11 @@ const ScanPage = ({ onScanComplete, lastScan }: { onScanComplete: (res: ScanResu
             )}
           </button>
         </form>
+        <div className="px-4 pb-2">
+          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+            Hint: Enter URL including <span className="text-blue-400">http://</span> or <span className="text-blue-400">https://</span> (e.g., http://localhost:3000)
+          </p>
+        </div>
 
         <AnimatePresence>
           {loading && (
@@ -1012,15 +964,14 @@ const AuthPage = ({ onAuth }: { onAuth: (user: User, token: string) => void }) =
     }
   };
 
-  const handleGoogleLogin = async () => {
+  const handleGoogleSignIn = async () => {
     setLoading(true);
     setError('');
     try {
+      // Use Firebase popup — handles OAuth origin registration automatically
       const result = await signInWithPopup(auth, googleProvider);
-      const user = result.user;
-      const idToken = await user.getIdToken();
+      const idToken = await result.user.getIdToken();
 
-      // Verify with backend
       const res = await fetch('/api/auth/google', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1034,7 +985,10 @@ const AuthPage = ({ onAuth }: { onAuth: (user: User, token: string) => void }) =
         setError(data.error || 'Google login failed on server');
       }
     } catch (err: any) {
-      setError(err.message || 'Google Login failed');
+      // user closed popup or popup blocked
+      if (err.code !== 'auth/popup-closed-by-user') {
+        setError(err.message || 'Google Sign-In failed');
+      }
     } finally {
       setLoading(false);
     }
@@ -1047,11 +1001,11 @@ const AuthPage = ({ onAuth }: { onAuth: (user: User, token: string) => void }) =
           <div className="inline-flex p-4 rounded-2xl bg-blue-600/10 text-blue-500 mb-4">
             <Shield size={40} />
           </div>
-          <h1 className="text-3xl font-bold text-white">SecureScan</h1>
+          <h1 className="text-3xl font-bold text-white tracking-tight">SecureScan</h1>
           <p className="text-slate-400 mt-2">Intelligent URL Threat Intelligence</p>
         </div>
 
-        <Card className="p-8">
+        <Card className="p-8 border-slate-800 bg-slate-900/50">
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-400">Email Address</label>
@@ -1060,7 +1014,7 @@ const AuthPage = ({ onAuth }: { onAuth: (user: User, token: string) => void }) =
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-3 px-4 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-3 px-4 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-medium"
                 placeholder="analyst@securescan.io"
               />
             </div>
@@ -1071,52 +1025,41 @@ const AuthPage = ({ onAuth }: { onAuth: (user: User, token: string) => void }) =
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-3 px-4 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-3 px-4 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-medium"
                 placeholder="••••••••"
               />
             </div>
-            {error && <p className="text-rose-500 text-sm">{error}</p>}
+            {error && <p className="text-rose-500 text-sm font-medium">{error}</p>}
             <button
               disabled={loading}
-              className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-3 rounded-xl transition-all"
+              className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-3.5 rounded-xl transition-all shadow-lg shadow-blue-900/20"
             >
               {loading ? 'Processing...' : isLogin ? 'Sign In' : 'Create Account'}
             </button>
           </form>
 
-          <div className="relative my-6">
+          <div className="relative my-8">
             <div className="absolute inset-0 flex items-center">
               <span className="w-full border-t border-slate-800"></span>
             </div>
-            <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-slate-900 px-2 text-slate-500">Or continue with</span>
+            <div className="relative flex justify-center text-xs uppercase font-bold tracking-widest text-slate-500">
+              <span className="bg-[#0f172a] px-4">Trusted Access</span>
             </div>
           </div>
 
           <button
-            onClick={handleGoogleLogin}
+            type="button"
+            onClick={handleGoogleSignIn}
             disabled={loading}
-            className="w-full flex items-center justify-center gap-3 bg-slate-950 border border-slate-800 hover:bg-slate-900 text-white font-semibold py-3 rounded-xl transition-all"
+            className="w-full flex items-center justify-center gap-3 bg-white hover:bg-gray-100 disabled:opacity-50 text-gray-800 font-semibold py-3 px-4 rounded-xl transition-all shadow"
           >
             <svg className="w-5 h-5" viewBox="0 0 24 24">
-              <path
-                fill="currentColor"
-                d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-              />
-              <path
-                fill="currentColor"
-                d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-              />
-              <path
-                fill="currentColor"
-                d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"
-              />
-              <path
-                fill="currentColor"
-                d="M12 5.38c1.62 0 3.06.56 4.21 1.66l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
-              />
+              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" />
+              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
             </svg>
-            Google
+            {loading ? 'Signing in...' : 'Continue with Google'}
           </button>
 
           <div className="mt-6 text-center">
@@ -1135,10 +1078,187 @@ const AuthPage = ({ onAuth }: { onAuth: (user: User, token: string) => void }) =
 
 // --- Main App ---
 
+// --- Supporting Components ---
+
+// validateUrlSyntax moved to top for proper hoisting
+
+// --- New Components for Expansion ---
+
+const AnalyticsPage = ({ stats }: { stats: DashboardStats | null }) => {
+  if (!stats) return <div className="animate-pulse space-y-8">
+    <div className="h-64 bg-slate-800/50 rounded-3xl" />
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+      <div className="h-96 bg-slate-800/50 rounded-3xl" />
+      <div className="h-96 bg-slate-800/50 rounded-3xl" />
+    </div>
+  </div>;
+
+  return (
+    <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
+      <div className="relative overflow-hidden rounded-[2.5rem] bg-gradient-to-br from-purple-600/20 via-indigo-600/10 to-transparent border border-white/5 p-10">
+        <div className="relative z-10 flex flex-col md:flex-row justify-between items-end gap-6">
+          <div>
+            <h2 className="text-4xl font-black text-white tracking-tight mb-3">Intelligence Analytics</h2>
+            <p className="text-slate-400 max-w-xl text-lg font-medium leading-relaxed">
+              Deep-dive into global threat landscapes and your organization's security posture.
+              Our AI models analyze patterns across millions of data points to provide these insights.
+            </p>
+          </div>
+          <div className="flex gap-4">
+            <div className="px-6 py-3 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-md">
+              <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Last Update</p>
+              <p className="text-sm font-bold text-white">Just now</p>
+            </div>
+          </div>
+        </div>
+        <div className="absolute top-0 right-0 -translate-y-1/2 translate-x-1/4 w-96 h-96 bg-purple-500/20 blur-[120px] rounded-full" />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <Card title="Global Threat Trends" className="rounded-[2.5rem] border-white/5 bg-slate-900/40 backdrop-blur-xl">
+          <div className="h-80">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={stats.riskTrends}>
+                <defs>
+                  <linearGradient id="colorAnalyticsRisk" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#a855f7" stopOpacity={0.4} />
+                    <stop offset="95%" stopColor="#a855f7" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
+                <XAxis
+                  dataKey="date"
+                  stroke="#475569"
+                  fontSize={11}
+                  tickFormatter={(val) => new Date(val).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                />
+                <YAxis stroke="#475569" fontSize={11} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #ffffff10', borderRadius: '16px', backdropFilter: 'blur(10px)' }}
+                />
+                <Area type="monotone" dataKey="avgRisk" stroke="#a855f7" strokeWidth={3} fillOpacity={1} fill="url(#colorAnalyticsRisk)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+
+        <Card title="Malicious Vector Distribution" className="rounded-[2.5rem] border-white/5 bg-slate-900/40 backdrop-blur-xl">
+          <div className="h-80">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={stats.threatCategories}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" horizontal={true} vertical={false} />
+                <XAxis dataKey="name" stroke="#475569" fontSize={11} />
+                <YAxis stroke="#475569" fontSize={11} />
+                <Tooltip
+                  cursor={{ fill: 'rgba(255,255,255,0.03)' }}
+                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #ffffff10', borderRadius: '16px' }}
+                />
+                <Bar dataKey="count" fill="url(#blueGradient)" radius={[8, 8, 0, 0]} barSize={30}>
+                  {stats.threatCategories.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={['#3b82f6', '#8b5cf6', '#a855f7', '#ec4899'][index % 4]} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+};
+
+const FavoritesPage = () => (
+  <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
+    <div className="flex flex-col gap-2">
+      <h2 className="text-4xl font-black text-white tracking-tight">Starred Assets</h2>
+      <p className="text-slate-400 font-medium">Quick access to prioritized threat intelligence.</p>
+    </div>
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      {[1, 2].map(i => (
+        <Card key={i} className="rounded-3xl border-white/5 bg-slate-900/40 hover:bg-slate-900/60 transition-all group">
+          <div className="flex justify-between items-start mb-4">
+            <div className="p-3 rounded-2xl bg-amber-500/10 text-amber-500">
+              <Star size={20} fill="currentColor" />
+            </div>
+            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Asset #{i}</span>
+          </div>
+          <h4 className="text-lg font-bold text-white mb-2 truncate">example-malicious-site.com</h4>
+          <p className="text-sm text-slate-400 mb-6 line-clamp-2">High risk phising attempt mimicking financial institution portals.</p>
+          <button className="w-full py-3 rounded-xl bg-slate-800 text-white font-bold text-sm hover:bg-slate-700 transition-colors">
+            Analyze Resource
+          </button>
+        </Card>
+      ))}
+    </div>
+  </div>
+);
+
+const SettingsPage = () => (
+  <div className="max-w-4xl space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-700">
+    <div className="flex flex-col gap-2">
+      <h2 className="text-4xl font-black text-white tracking-tight">Platform Configuration</h2>
+      <p className="text-slate-400 font-medium">Customize your analysis engine and interface experience.</p>
+    </div>
+
+    <div className="space-y-8">
+      <section className="space-y-4">
+        <h3 className="text-lg font-bold text-white flex items-center gap-2">
+          <div className="w-1.5 h-6 bg-blue-600 rounded-full" />
+          Appearance
+        </h3>
+        <Card className="rounded-[2rem] border-white/5 bg-slate-900/40">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="font-bold text-white">Visual Mode</p>
+              <p className="text-sm text-slate-500">Toggle between light and dark themes</p>
+            </div>
+            <ThemeToggle />
+          </div>
+        </Card>
+      </section>
+
+      <section className="space-y-4">
+        <h3 className="text-lg font-bold text-white flex items-center gap-2">
+          <div className="w-1.5 h-6 bg-purple-600 rounded-full" />
+          Scanner Engine
+        </h3>
+        <Card className="rounded-[2rem] border-white/5 bg-slate-900/40 divide-y divide-white/5 p-0 overflow-hidden">
+          <div className="p-6 flex items-center justify-between hover:bg-white/5 transition-colors cursor-pointer">
+            <div className="flex items-center gap-4">
+              <div className="p-3 rounded-2xl bg-slate-800 text-slate-400"><Activity size={20} /></div>
+              <div>
+                <p className="font-bold text-white">Scan Intensity</p>
+                <p className="text-sm text-slate-500 font-medium">Default depth for new analyses</p>
+              </div>
+            </div>
+            <span className="text-xs font-black text-blue-500 bg-blue-500/10 px-3 py-1 rounded-full uppercase tracking-widest">Full Scan</span>
+          </div>
+          <div className="p-6 flex items-center justify-between hover:bg-white/5 transition-colors cursor-pointer">
+            <div className="flex items-center gap-4">
+              <div className="p-3 rounded-2xl bg-slate-800 text-slate-400"><Shield size={20} /></div>
+              <div>
+                <p className="font-bold text-white">Auto-Threat Blocking</p>
+                <p className="text-sm text-slate-500 font-medium">Integrate with local security agents</p>
+              </div>
+            </div>
+            <div className="w-12 h-6 bg-blue-600 rounded-full relative">
+              <div className="absolute top-1 right-1 w-4 h-4 bg-white rounded-full shadow-lg" />
+            </div>
+          </div>
+        </Card>
+      </section>
+    </div>
+  </div>
+);
+
+// --- Main App ---
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'scan' | 'history'>('dashboard');
+  const [activeTab, setActiveTab] = useState<
+    'dashboard' | 'scan' | 'history' | 'analytics' | 'favorites' | 'settings' | 'profile' | 'api' | 'docs' | 'about'
+  >('dashboard');
   const [selectedScan, setSelectedScan] = useState<ScanResult | null>(null);
   const [lastScan, setLastScan] = useState<ScanResult | null>(null);
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -1189,7 +1309,13 @@ export default function App() {
 
   return (
     <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
-      <div className="min-h-screen bg-slate-950 dark:bg-slate-950 text-slate-200 dark:text-slate-200 flex overflow-x-hidden">
+      <div className="min-h-screen bg-[#020617] text-slate-200 flex overflow-x-hidden selection:bg-blue-500/30">
+        {/* Animated Background Elements */}
+        <div className="fixed inset-0 pointer-events-none">
+          <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/10 blur-[120px] rounded-full animate-pulse" />
+          <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-600/10 blur-[120px] rounded-full animate-pulse [animation-delay:2s]" />
+        </div>
+
         {/* Sidebar Backdrop for Mobile */}
         <AnimatePresence>
           {isSidebarOpen && (
@@ -1205,99 +1331,174 @@ export default function App() {
 
         {/* Sidebar */}
         <aside className={cn(
-          "fixed inset-y-0 left-0 z-50 w-64 bg-slate-950 dark:bg-slate-900 border-r border-slate-800 transition-transform duration-300 lg:relative lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-50 w-72 bg-slate-950/80 backdrop-blur-xl border-r border-white/5 transition-transform duration-500 ease-out lg:relative lg:translate-x-0",
           !isSidebarOpen && "-translate-x-full"
         )}>
-          <div className="flex flex-col h-full p-6">
-            <div className="flex items-center gap-3 mb-10 px-2">
-              <div className="p-2 bg-blue-600 rounded-lg text-white">
-                <Shield size={24} />
+          <div className="flex flex-col h-full p-8">
+            <div className="flex items-center gap-4 mb-12 px-2">
+              <div className="p-3 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-2xl text-white shadow-xl shadow-blue-900/40 transform -rotate-3 hover:rotate-0 transition-transform">
+                <Shield size={28} />
               </div>
-              <h1 className="text-xl font-bold text-white tracking-tight">SecureScan</h1>
+              <div>
+                <h1 className="text-2xl font-black text-white tracking-tight">SecureScan</h1>
+                <span className="text-[10px] font-black text-blue-500 uppercase tracking-widest bg-blue-500/10 px-2 py-0.5 rounded-full">v1.2.0</span>
+              </div>
             </div>
 
-            <nav className="flex-1 space-y-2">
-              <SidebarItem
-                icon={LayoutDashboard}
-                label="Dashboard"
-                active={activeTab === 'dashboard' && !selectedScan}
-                onClick={() => { setActiveTab('dashboard'); setSelectedScan(null); }}
-              />
-              <SidebarItem
-                icon={Search}
-                label="URL Scanner"
-                active={activeTab === 'scan' && !selectedScan}
-                onClick={() => { setActiveTab('scan'); setSelectedScan(null); }}
-              />
-              <SidebarItem
-                icon={History}
-                label="Scan History"
-                active={activeTab === 'history' && !selectedScan}
-                onClick={() => { setActiveTab('history'); setSelectedScan(null); }}
-              />
-            </nav>
+            <div className="flex-1 overflow-y-auto overflow-x-hidden -mx-2 px-2 space-y-8 scrollbar-hide">
+              <div>
+                <p className="px-4 text-[11px] font-black text-slate-500 uppercase tracking-[0.25em] mb-5">Core Analysis</p>
+                <nav className="space-y-1.5">
+                  <SidebarItem
+                    icon={LayoutDashboard}
+                    label="Dashboard"
+                    active={activeTab === 'dashboard' && !selectedScan}
+                    onClick={() => { setActiveTab('dashboard'); setSelectedScan(null); }}
+                  />
+                  <SidebarItem
+                    icon={Search}
+                    label="URL Scanner"
+                    active={activeTab === 'scan' && !selectedScan}
+                    onClick={() => { setActiveTab('scan'); setSelectedScan(null); }}
+                  />
+                  <SidebarItem
+                    icon={History}
+                    label="Scan History"
+                    active={activeTab === 'history' && !selectedScan}
+                    onClick={() => { setActiveTab('history'); setSelectedScan(null); }}
+                  />
+                  <SidebarItem
+                    icon={LineChartIcon}
+                    label="Analytics"
+                    active={activeTab === 'analytics' && !selectedScan}
+                    onClick={() => { setActiveTab('analytics'); setSelectedScan(null); }}
+                  />
+                </nav>
+              </div>
 
-            <div className="mt-auto pt-6 border-t border-slate-800 dark:border-slate-800 space-y-4">
-              <div className="flex items-center gap-3 px-2">
-                <div className="w-10 h-10 rounded-full bg-slate-800 dark:bg-slate-800 flex items-center justify-center text-blue-500">
-                  <UserIcon size={20} />
+              <div>
+                <p className="px-4 text-[11px] font-black text-slate-500 uppercase tracking-[0.25em] mb-5">Resources</p>
+                <nav className="space-y-1.5">
+                  <SidebarItem
+                    icon={Star}
+                    label="Favorites"
+                    active={activeTab === 'favorites' && !selectedScan}
+                    onClick={() => { setActiveTab('favorites'); setSelectedScan(null); }}
+                  />
+                  <SidebarItem
+                    icon={FileText}
+                    label="Documentation"
+                    active={activeTab === 'docs' && !selectedScan}
+                    onClick={() => { setActiveTab('docs'); setSelectedScan(null); }}
+                  />
+                  <SidebarItem
+                    icon={Activity}
+                    label="API Reference"
+                    active={activeTab === 'api' && !selectedScan}
+                    onClick={() => { setActiveTab('api'); setSelectedScan(null); }}
+                  />
+                </nav>
+              </div>
+
+              <div>
+                <p className="px-4 text-[11px] font-black text-slate-500 uppercase tracking-[0.25em] mb-5">Account</p>
+                <nav className="space-y-1.5">
+                  <SidebarItem
+                    icon={CreditCard}
+                    label="Subscription"
+                    active={activeTab === 'profile' && !selectedScan}
+                    onClick={() => { setActiveTab('profile'); setSelectedScan(null); }}
+                  />
+                  <SidebarItem
+                    icon={Settings}
+                    label="Settings"
+                    active={activeTab === 'settings' && !selectedScan}
+                    onClick={() => { setActiveTab('settings'); setSelectedScan(null); }}
+                  />
+                  <SidebarItem
+                    icon={Info}
+                    label="About Platform"
+                    active={activeTab === 'about' && !selectedScan}
+                    onClick={() => { setActiveTab('about'); setSelectedScan(null); }}
+                  />
+                </nav>
+              </div>
+            </div>
+
+            <div className="mt-auto pt-8 border-t border-white/5 space-y-5">
+              <div className="flex items-center gap-4 px-2 py-2 rounded-2xl bg-white/5 border border-white/5">
+                <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-slate-800 to-slate-700 flex items-center justify-center text-blue-400 shadow-inner">
+                  <UserIcon size={24} />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-bold text-white truncate">{user?.email}</p>
-                  <p className="text-xs text-slate-500 uppercase tracking-wider">{user?.role}</p>
+                  <p className="text-sm font-black text-white truncate max-w-[140px]">{user?.email}</p>
+                  <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">{user?.role}</p>
                 </div>
               </div>
               <button
                 onClick={handleLogout}
-                className="flex items-center w-full gap-3 px-4 py-3 text-slate-400 hover:text-rose-500 transition-colors"
+                className="flex items-center w-full gap-4 px-6 py-4 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 rounded-2xl transition-all font-bold text-sm"
               >
                 <LogOut size={20} />
-                <span className="font-medium">Sign Out</span>
+                <span>Terminate Session</span>
               </button>
             </div>
           </div>
         </aside>
 
         {/* Main Content */}
-        <main className="flex-1 flex flex-col min-w-0">
-          <header className="h-16 border-b border-slate-800 dark:border-slate-800 flex items-center justify-between px-6 bg-slate-950/50 dark:bg-slate-950/50 backdrop-blur-md sticky top-0 z-40">
+        <main className="flex-1 flex flex-col min-w-0 relative z-10">
+          <header className="h-24 flex items-center justify-between px-10 bg-[#020617]/40 backdrop-blur-xl sticky top-0 z-40 border-b border-white/5">
             <button
               onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-              className="lg:hidden p-2 text-slate-400 hover:text-white"
+              className="lg:hidden p-3 bg-white/5 rounded-xl text-slate-400 hover:text-white"
             >
               {isSidebarOpen ? <X size={24} /> : <Menu size={24} />}
             </button>
 
-            <div className="flex items-center gap-4">
-              <div className="hidden md:flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-500 dark:bg-emerald-500/20 dark:text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
-                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                System Online
+            <div className="flex items-center gap-6">
+              <div className="hidden md:flex items-center gap-3 px-5 py-2.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[11px] font-black uppercase tracking-widest">
+                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                Technical Systems Nominal
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-4">
+              <div className="hidden sm:flex px-4 py-2 bg-slate-900 border border-slate-800 rounded-xl items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-blue-600/20 flex items-center justify-center text-blue-500">
+                  <Activity size={16} />
+                </div>
+                <div className="text-left">
+                  <p className="text-[9px] font-black text-slate-500 uppercase">Live Latency</p>
+                  <p className="text-xs font-bold text-white">24ms</p>
+                </div>
+              </div>
               <ThemeToggle />
-              <button className="p-2 text-slate-400 hover:text-white transition-colors">
-                <Plus size={20} />
-              </button>
             </div>
           </header>
 
-          <div className="flex-1 overflow-y-auto p-6 lg:p-10 dark:bg-slate-950/20">
+          <div className="flex-1 overflow-y-auto p-10">
             <AnimatePresence mode="wait">
               {selectedScan ? (
                 <ReportPage scan={selectedScan} onBack={() => setSelectedScan(null)} />
               ) : (
                 <motion.div
                   key={activeTab}
-                  initial={{ opacity: 0, y: 10 }}
+                  initial={{ opacity: 0, y: 15 }}
                   animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  transition={{ duration: 0.2 }}
+                  exit={{ opacity: 0, y: -15 }}
+                  transition={{ duration: 0.4, ease: "easeOut" }}
                 >
                   {activeTab === 'dashboard' && <Dashboard stats={stats} />}
                   {activeTab === 'scan' && <ScanPage onScanComplete={handleScanComplete} lastScan={lastScan} />}
                   {activeTab === 'history' && <HistoryPage onSelectScan={setSelectedScan} />}
+                  {activeTab === 'analytics' && <AnalyticsPage stats={stats} />}
+                  {activeTab === 'favorites' && <FavoritesPage />}
+                  {activeTab === 'settings' && <SettingsPage />}
+                  {activeTab === 'profile' && <div className="p-20 text-center text-slate-500 font-bold uppercase tracking-[0.3em]">Profile & Subscription Module Initializing...</div>}
+                  {activeTab === 'api' && <div className="p-20 text-center text-slate-500 font-bold uppercase tracking-[0.3em]">Integrations Hub Initializing...</div>}
+                  {activeTab === 'docs' && <div className="p-20 text-center text-slate-500 font-bold uppercase tracking-[0.3em]">Documentation Registry Initializing...</div>}
+                  {activeTab === 'about' && <div className="p-20 text-center text-slate-500 font-bold uppercase tracking-[0.3em]">SecureScan Framework v1.2.0</div>}
                 </motion.div>
               )}
             </AnimatePresence>
@@ -1307,4 +1508,3 @@ export default function App() {
     </ThemeProvider>
   );
 }
-
