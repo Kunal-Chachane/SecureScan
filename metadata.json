@@ -1,0 +1,7 @@
+{
+  "name": "SecureScan – Intelligent URL Threat Scanner",
+  "description": "Enterprise-grade URL analysis tool for detecting phishing, malware, and reputation risks in real-time.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
